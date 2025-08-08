@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes import upload, query, embedding
+from routes import upload, query, embedding, vector
 import uvicorn
 
 # Create FastAPI app
@@ -25,6 +25,7 @@ app.add_middleware(
 app.include_router(upload.router)
 app.include_router(query.router)
 app.include_router(embedding.router)
+app.include_router(vector.router)
 
 @app.get("/")
 def read_root():
@@ -37,6 +38,7 @@ def read_root():
             "upload": "/upload/document",
             "query": "/query/document", 
             "embeddings": "/embeddings/text",
+            "vector": "/vector/search",
             "health": "/query/health"
         }
     }
@@ -50,7 +52,7 @@ def health_check():
             "upload": "ready",
             "query": "ready",
             "embeddings": "ready",
-            "vector_db": "pending"
+            "vector_db": "ready"
         }
     }
 
