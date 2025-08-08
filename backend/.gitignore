@@ -12,5 +12,11 @@ venv/
 # Cache
 *.log
 
-# Large files
+# Uploads and temporary files
+uploads/
 *.pdf
+*.docx
+*.txt
+
+# ChromaDB data
+chroma_data/
