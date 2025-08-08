@@ -4,6 +4,8 @@ Vector storage service using ChromaDB for embedding storage and similarity searc
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.api import ClientAPI
+from chromadb.api.models.Collection import Collection
 from typing import List, Dict, Any, Optional, Tuple
 import logging
 import json
@@ -25,8 +27,8 @@ class VectorStoreService:
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         
-        self.client: Optional[chromadb.PersistentClient] = None
-        self.collection: Optional[chromadb.Collection] = None
+        self.client: Optional[ClientAPI] = None
+        self.collection: Optional[Collection] = None
         self.collection_name = "ragindocs_embeddings"
         
     def initialize(self) -> bool:
@@ -104,7 +106,7 @@ class VectorStoreService:
             
             # Add to collection
             self.collection.add(
-                embeddings=embeddings,
+                embeddings=embeddings,  # type: ignore
                 documents=texts,
                 metadatas=processed_metadatas,
                 ids=ids
@@ -140,7 +142,7 @@ class VectorStoreService:
         try:
             # Perform similarity search
             results = self.collection.query(
-                query_embeddings=[query_embedding],
+                query_embeddings=[query_embedding],  # type: ignore
                 n_results=n_results,
                 where=where_filter,
                 include=["documents", "metadatas", "distances"]
@@ -160,10 +162,13 @@ class VectorStoreService:
                     processed_metadata = {}
                     for key, value in metadata.items():
                         try:
-                            # Try to parse as JSON first
-                            processed_metadata[key] = json.loads(value)
+                            # Try to parse as JSON first (only if it's a string)
+                            if isinstance(value, str):
+                                processed_metadata[key] = json.loads(value)
+                            else:
+                                processed_metadata[key] = value
                         except (json.JSONDecodeError, TypeError):
-                            # Keep as string if not JSON
+                            # Keep as original value if not JSON
                             processed_metadata[key] = value
                     processed_results["metadatas"].append(processed_metadata)
             
