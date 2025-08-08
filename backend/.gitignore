@@ -18,5 +18,8 @@ uploads/
 *.docx
 *.txt
 
+# ChromaDB vector database
+chroma_db/
+
 # ChromaDB data
 chroma_data/
