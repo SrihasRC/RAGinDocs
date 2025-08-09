@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Practice scripts
+pr_scripts/
+
 # Virtual env
 venv/
 .env

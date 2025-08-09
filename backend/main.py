@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routes import upload, query, embedding, vector
+from routes.pipeline import pipeline_router
 import uvicorn
 
 # Create FastAPI app
@@ -26,6 +27,7 @@ app.include_router(upload.router)
 app.include_router(query.router)
 app.include_router(embedding.router)
 app.include_router(vector.router)
+app.include_router(pipeline_router)  # Add the complete pipeline router
 
 @app.get("/")
 def read_root():
@@ -36,6 +38,7 @@ def read_root():
         "docs": "/docs",
         "endpoints": {
             "upload": "/upload/document",
+            "pipeline_complete": "/pipeline/document (complete pipeline)",
             "query": "/query/document", 
             "embeddings": "/embeddings/text",
             "vector": "/vector/search",

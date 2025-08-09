@@ -18,7 +18,7 @@ class RAGService:
     def __init__(self):
         """Initialize the RAG service."""
         self.max_context_length = 4000  # Maximum characters for context
-        self.min_similarity_threshold = 0.3  # Minimum similarity score to include
+        self.min_similarity_threshold = 0.2  # Lower threshold for more permissive matching
         self.default_top_k = 5  # Default number of chunks to retrieve
         
     def process_query(
@@ -148,16 +148,25 @@ class RAGService:
             "ids": []
         }
         
+        logger.info(f"Filtering with threshold: {threshold}")
+        
         for i, distance in enumerate(results.get("distances", [])):
-            # Convert distance to similarity: similarity = 1 - distance
-            similarity = 1 - distance
+            # Convert ChromaDB cosine distance to similarity score
+            # ChromaDB cosine distance: 0 = identical, 2 = completely different
+            # Convert to similarity: 0-1 scale where 1 = identical, 0 = completely different
+            similarity = max(0.0, 1.0 - (distance / 2.0))
+            logger.info(f"Chunk {i}: distance={distance:.4f}, similarity={similarity:.4f}")
             
             if similarity >= threshold:
                 filtered_results["documents"].append(results["documents"][i])
                 filtered_results["metadatas"].append(results["metadatas"][i])
                 filtered_results["distances"].append(distance)
                 filtered_results["ids"].append(results["ids"][i])
+                logger.info(f"✓ Chunk {i} included (similarity {similarity:.4f} >= {threshold})")
+            else:
+                logger.info(f"✗ Chunk {i} filtered out (similarity {similarity:.4f} < {threshold})")
         
+        logger.info(f"After filtering: {len(filtered_results['documents'])} chunks remain")
         return filtered_results
     
     def _build_context(self, results: Dict[str, Any]) -> str:
@@ -193,15 +202,23 @@ class RAGService:
         include_metadata: bool = True
     ) -> Dict[str, Any]:
         """Create comprehensive response with retrieved context."""
-        # Calculate similarity scores (1 - distance)
-        similarities = [1 - dist for dist in retrieval_results["distances"]]
+        # Calculate similarity scores using proper ChromaDB cosine distance conversion
+        similarities = [max(0.0, 1.0 - (dist / 2.0)) for dist in retrieval_results["distances"]]
         
         # Prepare source information
         sources = []
         if include_metadata:
+            # Debug logging to see what we're getting
+            logger.info(f"RAG Debug - retrieval_results keys: {retrieval_results.keys()}")
+            logger.info(f"RAG Debug - IDs: {retrieval_results.get('ids', 'No IDs found')}")
+            logger.info(f"RAG Debug - IDs type: {type(retrieval_results.get('ids', None))}")
+            
             for i, metadata in enumerate(retrieval_results["metadatas"]):
+                # Get chunk_id from the search results IDs, not from metadata
+                chunk_id = retrieval_results["ids"][i] if i < len(retrieval_results["ids"]) else f"chunk_{i}"
+                logger.info(f"RAG Debug - Chunk {i}: chunk_id={chunk_id}, type={type(chunk_id)}")
                 source = {
-                    "chunk_id": metadata.get("chunk_id", f"chunk_{i}"),
+                    "chunk_id": str(chunk_id),  # Ensure it's a string
                     "source_file": metadata.get("source_file", "unknown"),
                     "page_number": metadata.get("page_number", 0),
                     "similarity_score": round(similarities[i], 4),
