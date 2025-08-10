@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-// import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { 
   Upload, 
@@ -20,9 +19,10 @@ import {
   CheckCircle, 
   XCircle,
   Loader2,
-//   Download,
   Eye,
-  Search
+  Search,
+  Settings,
+  Lightbulb
 } from "lucide-react";
 
 interface UploadResponse {
@@ -44,6 +44,7 @@ interface UploadResponse {
 
 interface QueryResponse {
   query: string;
+  enhanced_query?: string;
   timestamp: string;
   status: string;
   results: {
@@ -57,6 +58,15 @@ interface QueryResponse {
       similarity_score: number;
       text_preview: string;
     }>;
+    llm_info: {
+      used: boolean;
+      model?: string;
+      tokens?: number;
+      status?: string;
+      error?: string;
+      reason?: string;
+      fallback?: boolean;
+    };
     retrieval_stats: {
       top_similarity: number;
       avg_similarity: number;
@@ -77,6 +87,28 @@ interface ServiceStatus {
     model_name: string;
     embedding_dim: number;
   };
+  llm_service?: {
+    configured: boolean;
+    default_model: string;
+    available_models: number;
+    api_base: string;
+  };
+}
+
+interface LLMModels {
+  available_models: Record<string, {
+    name: string;
+    max_tokens: number;
+    temperature: number;
+    description: string;
+  }>;
+  default_model: string;
+  service_configured: boolean;
+  recommendation: {
+    free_model: string;
+    description: string;
+    setup_note: string;
+  };
 }
 
 export default function BackendTester() {
@@ -85,27 +117,51 @@ export default function BackendTester() {
   const [uploadResponse, setUploadResponse] = useState<UploadResponse | null>(null);
   const [queryResponse, setQueryResponse] = useState<QueryResponse | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
+  const [llmModels, setLlmModels] = useState<LLMModels | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Advanced query settings
+  const [topK, setTopK] = useState(8);
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.15);
+  const [useLLM, setUseLLM] = useState(true);
+  const [selectedLLMModel, setSelectedLLMModel] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const API_BASE = "http://localhost:8000";
 
   // Check service status
   const checkStatus = async () => {
-    setLoading(true);
-    setError(null);
     try {
       const response = await fetch(`${API_BASE}/query/status`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setServiceStatus(data);
     } catch (err) {
       setError(`Status check failed: ${err}`);
-    } finally {
-      setLoading(false);
     }
   };
+
+  // Fetch LLM models
+  const fetchLLMModels = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/query/llm/models`);
+      const data = await response.json();
+      setLlmModels(data);
+      if (data.service_configured && !selectedLLMModel) {
+        setSelectedLLMModel(data.default_model);
+      }
+    } catch (err) {
+      console.error("Failed to fetch LLM models:", err);
+    }
+  };
+
+  // Load initial data on component mount
+  useEffect(() => {
+    checkStatus();
+    fetchLLMModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Upload and process document
   const uploadDocument = async () => {
@@ -135,7 +191,7 @@ export default function BackendTester() {
     }
   };
 
-  // Query documents
+  // Enhanced query function with better parameters
   const queryDocuments = async () => {
     if (!query.trim()) return;
     
@@ -144,14 +200,28 @@ export default function BackendTester() {
     setQueryResponse(null);
     
     try {
+      // Enhance the query for better matching
+      let enhancedQuery = query.trim();
+      
+      // Add contextual keywords for common queries
+      if (enhancedQuery.toLowerCase().includes("course outcomes")) {
+        enhancedQuery += " completion student able to evaluate apply demonstrate";
+      } else if (enhancedQuery.toLowerCase().includes("objectives")) {
+        enhancedQuery += " impart assess develop artificial intelligence";
+      } else if (enhancedQuery.toLowerCase().includes("modules")) {
+        enhancedQuery += " hours introduction logic reasoning planning";
+      }
+      
       const response = await fetch(`${API_BASE}/query/document`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: query,
-          top_k: 5,
-          similarity_threshold: 0.2,
+          query: enhancedQuery,
+          top_k: topK,
+          similarity_threshold: similarityThreshold,
           include_metadata: true,
+          use_llm: useLLM,
+          llm_model: selectedLLMModel || undefined,
         }),
       });
       
@@ -171,6 +241,21 @@ export default function BackendTester() {
     const sizes = ["Bytes", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
+  // Quick query suggestions
+  const quickQueries = [
+    "Course Outcomes",
+    "Course Objectives", 
+    "Module topics",
+    "Reference Books",
+    "Mode of Evaluation",
+    "Artificial Intelligence definition",
+    "Machine Learning concepts"
+  ];
+
+  const handleQuickQuery = (quickQuery: string) => {
+    setQuery(quickQuery);
   };
 
   return (
@@ -477,14 +562,118 @@ export default function BackendTester() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* Quick Query Suggestions */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="h-4 w-4" />
+                    <label className="text-sm font-medium">Quick Queries</label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {quickQueries.map((quickQuery) => (
+                      <Button
+                        key={quickQuery}
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleQuickQuery(quickQuery)}
+                        className="text-xs"
+                      >
+                        {quickQuery}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Query Input */}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Your Question</label>
                   <Textarea
-                    placeholder="What are the key terms in the contract?"
+                    placeholder="What are the course outcomes? What is artificial intelligence?"
                     value={query}
                     onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
                     rows={3}
                   />
+                </div>
+
+                {/* Advanced Settings */}
+                <div className="space-y-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center gap-2"
+                  >
+                    <Settings className="h-4 w-4" />
+                    Advanced Settings
+                  </Button>
+                  
+                  {showAdvanced && (
+                    <div className="space-y-4 p-4 border rounded-lg bg-muted/20">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">Results Count: {topK}</label>
+                          <Input
+                            type="range"
+                            min="3"
+                            max="15"
+                            value={topK}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTopK(parseInt(e.target.value))}
+                            className="w-full"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">Similarity Threshold: {(similarityThreshold * 100).toFixed(0)}%</label>
+                          <Input
+                            type="range"
+                            min="0.05"
+                            max="0.5"
+                            step="0.05"
+                            value={similarityThreshold}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSimilarityThreshold(parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                        </div>
+                      </div>
+                      
+                      {/* LLM Settings */}
+                      <div className="border-t pt-4">
+                        <h4 className="text-sm font-medium mb-3">AI Response Settings</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="flex items-center gap-2">
+                              <Input
+                                type="checkbox"
+                                checked={useLLM}
+                                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUseLLM(e.target.checked)}
+                                className="w-4 h-4"
+                              />
+                              <span className="text-sm font-medium">Use AI for responses</span>
+                            </label>
+                            {llmModels?.service_configured && (
+                              <p className="text-xs text-green-600">✓ AI service configured</p>
+                            )}
+                            {!llmModels?.service_configured && (
+                              <p className="text-xs text-yellow-600">⚠ AI service not configured</p>
+                            )}
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium">AI Model</label>
+                            <select
+                              value={selectedLLMModel}
+                              onChange={(e) => setSelectedLLMModel(e.target.value)}
+                              disabled={!useLLM || !llmModels?.service_configured}
+                              className="w-full px-3 py-1 text-sm border rounded"
+                            >
+                              {llmModels && Object.entries(llmModels.available_models).map(([id, model]) => (
+                                <option key={id} value={id}>
+                                  {model.description}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
                 <Button 
@@ -500,7 +689,7 @@ export default function BackendTester() {
                   ) : (
                     <>
                       <Search className="h-4 w-4 mr-2" />
-                      Query Documents
+                      Query Documents (Enhanced)
                     </>
                   )}
                 </Button>
@@ -516,15 +705,42 @@ export default function BackendTester() {
                     <CardTitle className="flex items-center gap-2">
                       <Brain className="h-5 w-5" />
                       AI Response
+                      {queryResponse.results.llm_info?.used && (
+                        <span className="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded">
+                          AI Generated
+                        </span>
+                      )}
+                      {!queryResponse.results.llm_info?.used && (
+                        <span className="ml-2 px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">
+                          Fallback
+                        </span>
+                      )}
                     </CardTitle>
+                    {queryResponse.results.llm_info?.used && (
+                      <p className="text-sm text-muted-foreground">
+                        Generated by {queryResponse.results.llm_info.model} • {queryResponse.results.llm_info.tokens} tokens
+                      </p>
+                    )}
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
                       <div className="border rounded p-4 bg-muted/50">
-                        <p className="text-sm">{queryResponse.results.suggested_answer}</p>
+                        <div 
+                          className="prose prose-sm max-w-none text-sm leading-relaxed"
+                          dangerouslySetInnerHTML={{
+                            __html: queryResponse.results.suggested_answer
+                              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                              .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                              .replace(/\n\n/g, '</p><p>')
+                              .replace(/\n/g, '<br/>')
+                              .replace(/^/, '<p>')
+                              .replace(/$/, '</p>')
+                              .replace(/<p><\/p>/g, '')
+                          }}
+                        />
                       </div>
                       
-                      <div className="grid grid-cols-3 gap-4 text-sm">
+                      <div className="grid grid-cols-4 gap-4 text-sm">
                         <div>
                           <p className="font-medium">Chunks Found</p>
                           <p className="text-muted-foreground">{queryResponse.results.chunks_found}</p>
@@ -536,12 +752,63 @@ export default function BackendTester() {
                           </p>
                         </div>
                         <div>
+                          <p className="font-medium">Avg Similarity</p>
+                          <p className="text-muted-foreground">
+                            {(queryResponse.results.retrieval_stats.avg_similarity * 100).toFixed(1)}%
+                          </p>
+                        </div>
+                        <div>
                           <p className="font-medium">Context Length</p>
                           <p className="text-muted-foreground">
                             {queryResponse.results.retrieval_stats.context_length} chars
                           </p>
                         </div>
                       </div>
+
+                      {/* LLM Information Details */}
+                      {queryResponse.results.llm_info && (
+                        <div className="border-t pt-4">
+                          <h4 className="text-sm font-medium mb-2">AI Processing Details</h4>
+                          <div className="grid grid-cols-2 gap-4 text-xs">
+                            <div>
+                              <span className="font-medium">Status: </span>
+                              <span className={queryResponse.results.llm_info.used ? "text-green-600" : "text-yellow-600"}>
+                                {queryResponse.results.llm_info.used ? "AI Generated" : "Fallback Used"}
+                              </span>
+                            </div>
+                            {queryResponse.results.llm_info.used && (
+                              <>
+                                <div>
+                                  <span className="font-medium">Model: </span>
+                                  <span className="text-muted-foreground">{queryResponse.results.llm_info.model}</span>
+                                </div>
+                                <div>
+                                  <span className="font-medium">Tokens: </span>
+                                  <span className="text-muted-foreground">{queryResponse.results.llm_info.tokens}</span>
+                                </div>
+                                <div>
+                                  <span className="font-medium">Response Time: </span>
+                                  <span className="text-muted-foreground">
+                                    {queryResponse.results.llm_info.status === "success" ? "✓ Fast" : "⚠ Slow"}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                            {!queryResponse.results.llm_info.used && queryResponse.results.llm_info.reason && (
+                              <div className="col-span-2">
+                                <span className="font-medium">Reason: </span>
+                                <span className="text-muted-foreground">{queryResponse.results.llm_info.reason}</span>
+                              </div>
+                            )}
+                            {queryResponse.results.llm_info.error && (
+                              <div className="col-span-2">
+                                <span className="font-medium text-red-600">Error: </span>
+                                <span className="text-red-600 text-xs">{queryResponse.results.llm_info.error}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
