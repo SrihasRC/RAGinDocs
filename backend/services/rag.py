@@ -9,6 +9,7 @@ from datetime import datetime
 
 from services.embedding import embedding_service
 from services.vector_store import vector_store
+from services.llm import llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +19,66 @@ class RAGService:
     def __init__(self):
         """Initialize the RAG service."""
         self.max_context_length = 4000  # Maximum characters for context
-        self.min_similarity_threshold = 0.2  # Lower threshold for more permissive matching
-        self.default_top_k = 5  # Default number of chunks to retrieve
+        self.min_similarity_threshold = 0.15  # Optimized threshold for better recall
+        self.default_top_k = 8  # More results for better coverage
+        # Generic query enhancement patterns that work across domains
+        self.query_enhancement_keywords = {
+            # Academic/Educational
+            "outcomes": "completion student able to achieve demonstrate",
+            "objectives": "goals purposes aims learning targets",
+            "modules": "topics sections chapters units content",
+            "evaluation": "assessment grading testing measurement",
+            "references": "books sources bibliography citations",
+            
+            # Business/Technical
+            "requirements": "specifications needs criteria conditions",
+            "features": "capabilities functions characteristics",
+            "process": "steps procedures methodology workflow",
+            "benefits": "advantages value proposition gains",
+            
+            # General
+            "definition": "meaning explanation description concept",
+            "examples": "instances cases samples illustrations",
+            "comparison": "differences similarities contrast analysis",
+            "summary": "overview synopsis key points highlights"
+        }
         
-    def process_query(
+    def _enhance_query(self, query: str) -> str:
+        """Enhance the query with contextual keywords for better retrieval."""
+        enhanced_query = query.lower()
+        
+        # Add contextual keywords based on query content
+        for key_phrase, enhancement in self.query_enhancement_keywords.items():
+            if key_phrase.lower() in enhanced_query:
+                enhanced_query += f" {enhancement}"
+                break  # Only apply the first matching enhancement to avoid noise
+        
+        # Add semantic variations for common query patterns
+        query_words = enhanced_query.split()
+        
+        # For "what is" questions, add definition-related terms
+        if "what" in query_words and "is" in query_words:
+            enhanced_query += " definition meaning explanation"
+        
+        # For "how to" questions, add process-related terms  
+        elif "how" in query_words:
+            enhanced_query += " steps process method procedure"
+            
+        # For listing questions, add enumeration terms
+        elif any(word in query_words for word in ["list", "enumerate", "identify"]):
+            enhanced_query += " items elements components"
+        
+        return enhanced_query
+        
+    async def process_query(
         self,
         query: str,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
         document_filter: Optional[Dict[str, Any]] = None,
-        include_metadata: bool = True
+        include_metadata: bool = True,
+        use_llm: bool = True,
+        llm_model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a query using RAG approach.
@@ -38,6 +89,8 @@ class RAGService:
             similarity_threshold: Minimum similarity score
             document_filter: Optional filter for specific documents
             include_metadata: Whether to include chunk metadata
+            use_llm: Whether to use LLM for generating response
+            llm_model: Specific LLM model to use
             
         Returns:
             Dictionary with query results and context
@@ -47,7 +100,10 @@ class RAGService:
             top_k = top_k or self.default_top_k
             similarity_threshold = similarity_threshold or self.min_similarity_threshold
             
-            logger.info(f"Processing query: '{query[:50]}...'")
+            # Enhance query for better retrieval
+            enhanced_query = self._enhance_query(query)
+            
+            logger.info(f"Processing query: '{query}' (enhanced: '{enhanced_query[:50]}...')")
             
             # Step 1: Initialize services if needed
             if not self._ensure_services_ready():
@@ -55,7 +111,7 @@ class RAGService:
             
             # Step 2: Retrieve relevant context
             retrieval_results = self._retrieve_context(
-                query=query,
+                query=enhanced_query,  # Use enhanced query
                 top_k=top_k,
                 document_filter=document_filter
             )
@@ -73,11 +129,14 @@ class RAGService:
             context = self._build_context(filtered_results)
             
             # Step 5: Create comprehensive response
-            response = self._create_response(
+            response = await self._create_response(
                 query=query,
+                enhanced_query=enhanced_query,
                 context=context,
                 retrieval_results=filtered_results,
-                include_metadata=include_metadata
+                include_metadata=include_metadata,
+                use_llm=use_llm,
+                llm_model=llm_model
             )
             
             logger.info(f"Query processed successfully. Found {len(filtered_results['documents'])} relevant chunks.")
@@ -194,12 +253,15 @@ class RAGService:
         
         return "\n".join(context_parts)
     
-    def _create_response(
+    async def _create_response(
         self,
         query: str,
+        enhanced_query: str,
         context: str,
         retrieval_results: Dict[str, Any],
-        include_metadata: bool = True
+        include_metadata: bool = True,
+        use_llm: bool = True,
+        llm_model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create comprehensive response with retrieved context."""
         # Calculate similarity scores using proper ChromaDB cosine distance conversion
@@ -226,11 +288,58 @@ class RAGService:
                 }
                 sources.append(source)
         
-        # Create suggested answers based on context
-        suggested_answer = self._generate_suggested_answer(query, context)
+        # Generate intelligent response using LLM or fallback
+        llm_info = {
+            "used": False,
+            "model": None,
+            "tokens": 0,
+            "status": None,
+            "error": None,
+            "reason": None,
+            "fallback": False
+        }
+        
+        if use_llm and llm_service.is_configured():
+            try:
+                logger.info(f"Attempting LLM generation with model: {llm_model or 'default'}")
+                llm_response = await llm_service.generate_response(
+                    query=query,
+                    context=context,
+                    model=llm_model or "llama-3.2-3b"
+                )
+                suggested_answer = llm_response["response"]
+                llm_info = {
+                    "used": True,
+                    "model": llm_response.get("model_used", "unknown"),
+                    "tokens": llm_response.get("total_tokens", 0),
+                    "status": llm_response.get("status", "success"),
+                    "error": None,
+                    "reason": None,
+                    "fallback": False
+                }
+                logger.info(f"LLM generation successful: {llm_info['tokens']} tokens, model: {llm_info['model']}")
+            except Exception as e:
+                logger.error(f"LLM generation failed: {str(e)}")
+                suggested_answer = self._generate_suggested_answer(query, context)
+                llm_info = {
+                    "used": False,
+                    "model": None,
+                    "tokens": 0,
+                    "status": "error",
+                    "error": str(e),
+                    "reason": "LLM request failed",
+                    "fallback": True
+                }
+        else:
+            suggested_answer = self._generate_suggested_answer(query, context)
+            if not llm_service.is_configured():
+                llm_info["reason"] = "LLM service not configured"
+            else:
+                llm_info["reason"] = "LLM disabled by user"
         
         response = {
             "query": query,
+            "enhanced_query": enhanced_query,
             "timestamp": datetime.now().isoformat(),
             "status": "success",
             "results": {
@@ -238,6 +347,7 @@ class RAGService:
                 "suggested_answer": suggested_answer,
                 "chunks_found": len(retrieval_results["documents"]),
                 "sources": sources if include_metadata else [],
+                "llm_info": llm_info,
                 "retrieval_stats": {
                     "top_similarity": round(max(similarities), 4) if similarities else 0,
                     "avg_similarity": round(sum(similarities) / len(similarities), 4) if similarities else 0,

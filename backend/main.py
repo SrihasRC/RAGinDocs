@@ -1,5 +1,11 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load environment variables
+load_dotenv()
+
 from routes import upload, query, embedding, vector
 from routes.pipeline import pipeline_router
 import uvicorn

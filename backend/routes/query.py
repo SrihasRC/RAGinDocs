@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 
 from services.rag import rag_service
+from services.llm import llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,18 @@ class QueryRequest(BaseModel):
     similarity_threshold: Optional[float] = Field(default=0.3, ge=0.0, le=1.0, description="Minimum similarity threshold")
     document_filter: Optional[Dict[str, Any]] = Field(None, description="Filter for specific documents")
     include_metadata: bool = Field(default=True, description="Include chunk metadata in response")
+    use_llm: bool = Field(default=True, description="Use LLM for intelligent response generation")
+    llm_model: Optional[str] = Field(None, description="Specific LLM model to use")
+
+class LLMInfo(BaseModel):
+    """Information about LLM usage."""
+    used: bool = Field(..., description="Whether LLM was used")
+    model: Optional[str] = Field(None, description="Model used for generation")
+    tokens: Optional[int] = Field(None, description="Total tokens used")
+    status: Optional[str] = Field(None, description="Generation status")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    reason: Optional[str] = Field(None, description="Reason for not using LLM")
+    fallback: Optional[bool] = Field(None, description="Whether fallback was used")
 
 class SourceInfo(BaseModel):
     """Source information for retrieved chunks."""
@@ -43,11 +56,16 @@ class QueryResults(BaseModel):
     suggested_answer: str = Field(..., description="AI-suggested answer based on context")
     chunks_found: int = Field(..., description="Number of relevant chunks found")
     sources: List[SourceInfo] = Field(..., description="Source information for chunks")
+    llm_info: LLMInfo = Field(..., description="Information about LLM usage")
     retrieval_stats: RetrievalStats = Field(..., description="Retrieval statistics")
 
 class QueryResponse(BaseModel):
     """Response model for document queries."""
     query: str = Field(..., description="Original user query")
+    enhanced_query: Optional[str] = Field(None, description="Enhanced query used for retrieval")
+    timestamp: str = Field(..., description="Query processing timestamp")
+    status: str = Field(..., description="Query processing status")
+    results: QueryResults = Field(..., description="Query results and context")
     timestamp: str = Field(..., description="Query processing timestamp")
     status: str = Field(..., description="Query status (success/error/no_results)")
     results: QueryResults = Field(..., description="Query results and context")
@@ -102,24 +120,27 @@ async def query_documents(
     service: Any = Depends(ensure_rag_service_ready)
 ):
     """
-    Query documents using RAG (Retrieval-Augmented Generation).
+    Query documents using RAG (Retrieval-Augmented Generation) with LLM integration.
     
     This endpoint:
     1. Converts the query to embeddings
     2. Searches the vector database for similar chunks
     3. Retrieves relevant context from documents
-    4. Provides a suggested answer based on the context
+    4. Uses LLM to generate intelligent responses (if configured)
+    5. Provides a suggested answer based on the context
     """
     try:
         logger.info(f"Processing query: '{request.query[:50]}...'")
         
-        # Process query using RAG service
-        result = service.process_query(
+        # Process query using RAG service (now async)
+        result = await service.process_query(
             query=request.query,
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold,
             document_filter=request.document_filter,
-            include_metadata=request.include_metadata
+            include_metadata=request.include_metadata,
+            use_llm=request.use_llm,
+            llm_model=request.llm_model
         )
         
         # Convert to response model
@@ -143,11 +164,12 @@ async def simple_query(
     Simple query endpoint for quick testing without detailed metadata.
     """
     try:
-        result = service.process_query(
+        result = await service.process_query(
             query=request.query,
             top_k=3,
             similarity_threshold=0.3,
-            include_metadata=False
+            include_metadata=False,
+            use_llm=True  # Enable LLM for simple queries too
         )
         
         if result["status"] == "error":
@@ -164,11 +186,39 @@ async def simple_query(
         logger.error(f"Error in simple query: {str(e)}")
         return {"error": str(e)}
 
+@router.get("/llm/models")
+async def get_llm_models():
+    """Get available LLM models and configuration status."""
+    try:
+        models_info = llm_service.get_available_models()
+        service_status = llm_service.get_service_status()
+        
+        return {
+            "available_models": models_info["models"],
+            "default_model": models_info["default"],
+            "service_configured": models_info["configured"],
+            "service_status": service_status,
+            "recommendation": {
+                "free_model": "llama-3.1-8b",
+                "description": "Meta Llama 3.1 8B Instruct - Fast, free, and excellent for Q&A",
+                "setup_note": "Set OPENROUTER_API_KEY environment variable to enable LLM responses"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting LLM models: {str(e)}")
+        return {
+            "error": str(e),
+            "available_models": {},
+            "service_configured": False
+        }
+
 @router.get("/health")
 async def query_health():
     """Health check for query service."""
     try:
         status = rag_service.get_service_status()
+        llm_status = llm_service.get_service_status()
         
         health_status = "healthy"
         if status["vector_store"]["status"] != "ready":
@@ -179,7 +229,10 @@ async def query_health():
         return {
             "status": health_status,
             "timestamp": datetime.now().isoformat(),
-            "services": status
+            "services": {
+                **status,
+                "llm_service": llm_status
+            }
         }
         
     except Exception as e:
