@@ -29,3 +29,5 @@ chroma_data/
 
 # Test files
 test_*.py
+
+ref/

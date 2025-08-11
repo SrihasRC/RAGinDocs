@@ -5,6 +5,7 @@ Combines document retrieval with context-aware response generation.
 
 from typing import List, Dict, Any, Optional, Tuple
 import logging
+import re
 from datetime import datetime
 
 from services.embedding import embedding_service
@@ -18,39 +19,49 @@ class RAGService:
     
     def __init__(self):
         """Initialize the RAG service."""
-        self.max_context_length = 4000  # Maximum characters for context
-        self.min_similarity_threshold = 0.15  # Optimized threshold for better recall
-        self.default_top_k = 8  # More results for better coverage
-        # Generic query enhancement patterns that work across domains
+        self.max_context_length = 4000  # Balanced for better coverage without overwhelming LLM
+        self.min_similarity_threshold = 0.15  # Reasonable threshold for quality
+        self.default_top_k = 8  # Moderate results for good coverage
+                # Generic query enhancement patterns that work across domains
         self.query_enhancement_keywords = {
             # Academic/Educational
-            "outcomes": "completion student able to achieve demonstrate",
-            "objectives": "goals purposes aims learning targets",
-            "modules": "topics sections chapters units content",
-            "evaluation": "assessment grading testing measurement",
-            "references": "books sources bibliography citations",
+            "outcomes": "completion student able",
+            "objectives": "goals purposes aims",
+            "modules": "topics sections chapters",
+            "module": "topics sections chapters contents",
+            "evaluation": "assessment grading testing",
+            "references": "books sources bibliography",
             
             # Business/Technical
-            "requirements": "specifications needs criteria conditions",
+            "requirements": "specifications needs criteria",
             "features": "capabilities functions characteristics",
-            "process": "steps procedures methodology workflow",
-            "benefits": "advantages value proposition gains",
+            "process": "steps procedures methodology",
+            "benefits": "advantages value proposition",
             
             # General
-            "definition": "meaning explanation description concept",
-            "examples": "instances cases samples illustrations",
-            "comparison": "differences similarities contrast analysis",
-            "summary": "overview synopsis key points highlights"
+            "definition": "meaning explanation description",
+            "examples": "instances cases samples",
+            "comparison": "differences similarities contrast",
+            "summary": "overview synopsis highlights"
         }
         
     def _enhance_query(self, query: str) -> str:
         """Enhance the query with contextual keywords for better retrieval."""
         enhanced_query = query.lower()
         
-        # Add contextual keywords based on query content
+        # Special handling for module-specific queries
+        module_match = re.search(r'module\s*(\d+)', enhanced_query)
+        if module_match:
+            module_num = module_match.group(1)
+            # Add multiple variations to catch the module
+            enhanced_query += f" Module:{module_num} Module {module_num} module{module_num}"
+        
+        # Add contextual keywords based on query content for general queries
         for key_phrase, enhancement in self.query_enhancement_keywords.items():
             if key_phrase.lower() in enhanced_query:
-                enhanced_query += f" {enhancement}"
+                # Only add a subset of enhancement to avoid noise
+                enhancement_words = enhancement.split()[:3]  # Take first 3 words only
+                enhanced_query += f" {' '.join(enhancement_words)}"
                 break  # Only apply the first matching enhancement to avoid noise
         
         # Add semantic variations for common query patterns
@@ -58,15 +69,15 @@ class RAGService:
         
         # For "what is" questions, add definition-related terms
         if "what" in query_words and "is" in query_words:
-            enhanced_query += " definition meaning explanation"
+            enhanced_query += " definition meaning"
         
         # For "how to" questions, add process-related terms  
         elif "how" in query_words:
-            enhanced_query += " steps process method procedure"
+            enhanced_query += " steps process"
             
         # For listing questions, add enumeration terms
         elif any(word in query_words for word in ["list", "enumerate", "identify"]):
-            enhanced_query += " items elements components"
+            enhanced_query += " items elements"
         
         return enhanced_query
         
@@ -307,17 +318,34 @@ class RAGService:
                     context=context,
                     model=llm_model or "llama-3.2-3b"
                 )
-                suggested_answer = llm_response["response"]
-                llm_info = {
-                    "used": True,
-                    "model": llm_response.get("model_used", "unknown"),
-                    "tokens": llm_response.get("total_tokens", 0),
-                    "status": llm_response.get("status", "success"),
-                    "error": None,
-                    "reason": None,
-                    "fallback": False
-                }
-                logger.info(f"LLM generation successful: {llm_info['tokens']} tokens, model: {llm_info['model']}")
+                
+                # Check if the LLM actually succeeded or returned an error/fallback
+                if llm_response.get("status") == "success":
+                    suggested_answer = llm_response["response"]
+                    llm_info = {
+                        "used": True,
+                        "model": llm_response.get("model_used", "unknown"),
+                        "tokens": llm_response.get("total_tokens", 0),
+                        "status": llm_response.get("status", "success"),
+                        "error": None,
+                        "reason": None,
+                        "fallback": False
+                    }
+                    logger.info(f"LLM generation successful: {llm_info['tokens']} tokens, model: {llm_info['model']}")
+                else:
+                    # LLM service returned error or fallback response
+                    suggested_answer = llm_response["response"]
+                    llm_info = {
+                        "used": False,
+                        "model": None,
+                        "tokens": 0,
+                        "status": llm_response.get("status", "error"),
+                        "error": llm_response.get("error", "LLM service returned non-success status"),
+                        "reason": "LLM service failed",
+                        "fallback": True
+                    }
+                    logger.warning(f"LLM returned non-success status: {llm_response.get('status')}")
+                    
             except Exception as e:
                 logger.error(f"LLM generation failed: {str(e)}")
                 suggested_answer = self._generate_suggested_answer(query, context)
