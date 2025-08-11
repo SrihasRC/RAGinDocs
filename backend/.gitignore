@@ -2,9 +2,6 @@
 __pycache__/
 *.pyc
 
-# Practice scripts
-pr_scripts/
-
 # Virtual env
 venv/
 .env
@@ -15,19 +12,23 @@ venv/
 # Cache
 *.log
 
-# Uploads and temporary files
+# Multimodal data directories
+data/temp/
+data/chroma/
 uploads/
+
+# Document files (for testing)
 *.pdf
 *.docx
 *.txt
 
-# ChromaDB vector database
-chroma_db/
-
-# ChromaDB data
-chroma_data/
-
 # Test files
 test_*.py
 
+# Reference materials
 ref/
+
+# Legacy directories (from old implementation)
+chroma_db/
+chroma_data/
+pr_scripts/

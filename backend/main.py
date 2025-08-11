@@ -2,19 +2,19 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 # Load environment variables
 load_dotenv()
 
-from routes import upload, query, embedding, vector
-from routes.pipeline import pipeline_router
-import uvicorn
+# Import routes
+from api.routes.documents import router as documents_router
 
 # Create FastAPI app
 app = FastAPI(
-    title="RAGinDocs API",
-    description="Real-time QA + Intelligent Action Generation from PDFs/Docs using Hybrid RAG",
-    version="1.0.0",
+    title="RAGinDocs Multimodal API",
+    description="Advanced multimodal RAG system with text, table, and image processing",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -22,47 +22,37 @@ app = FastAPI(
 # Add CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual frontend URLs
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Specific frontend URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
-app.include_router(upload.router)
-app.include_router(query.router)
-app.include_router(embedding.router)
-app.include_router(vector.router)
-app.include_router(pipeline_router)  # Add the complete pipeline router
+app.include_router(documents_router)
 
 @app.get("/")
 def read_root():
     return {
-        "message": "Welcome to RAGinDocs API!",
-        "version": "1.0.0",
-        "phase": "Phase 1 - Core RAG Pipeline",
-        "docs": "/docs",
-        "endpoints": {
-            "upload": "/upload/document",
-            "pipeline_complete": "/pipeline/document (complete pipeline)",
-            "query": "/query/document", 
-            "embeddings": "/embeddings/text",
-            "vector": "/vector/search",
-            "health": "/query/health"
-        }
+        "message": "Welcome to RAGinDocs Multimodal API!",
+        "version": "2.0.0",
+        "status": "development",
+        "features": [
+            "Multimodal document processing (text, tables, images)",
+            "Google Gemini 1.5 Flash integration",
+            "Multi-vector ChromaDB storage",
+            "Summary-based retrieval"
+        ],
+        "docs": "/docs"
     }
 
 @app.get("/health")
 def health_check():
     return {
         "status": "healthy",
-        "phase": "Phase 1",
-        "services": {
-            "upload": "ready",
-            "query": "ready",
-            "embeddings": "ready",
-            "vector_db": "ready"
-        }
+        "version": "2.0.0",
+        "system": "multimodal-rag",
+        "ready": True
     }
 
 if __name__ == "__main__":
