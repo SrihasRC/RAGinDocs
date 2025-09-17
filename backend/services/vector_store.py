@@ -1,302 +1,318 @@
-"""
-Vector storage service using ChromaDB for embedding storage and similarity search.
-"""
-
-import chromadb
-from chromadb.config import Settings
-from chromadb.api import ClientAPI
-from chromadb.api.models.Collection import Collection
-from typing import List, Dict, Any, Optional, Tuple
-import logging
-import json
 import uuid
-from pathlib import Path
+from typing import Dict, List, Any, Optional
+import asyncio
 
-logger = logging.getLogger(__name__)
+# LangChain imports
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.retrievers.multi_vector import MultiVectorRetriever
+from langchain.storage import InMemoryStore
+from langchain.schema.document import Document
+from langchain_community.vectorstores.utils import filter_complex_metadata
 
-class VectorStoreService:
-    """Service for vector storage and similarity search using ChromaDB."""
+from config.settings import config
+
+class LangChainVectorStore:
+    """LangChain-based vector store using ChromaDB with multi-vector retrieval"""
     
-    def __init__(self, persist_directory: str = "./chroma_db"):
-        """
-        Initialize the vector store service.
+    def __init__(self):
+        # Initialize embeddings (using local model from your packages)
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
         
-        Args:
-            persist_directory: Directory to persist ChromaDB data
-        """
-        self.persist_directory = Path(persist_directory)
-        self.persist_directory.mkdir(parents=True, exist_ok=True)
+        # Create separate vector stores for different content types
+        self.text_vectorstore = Chroma(
+            collection_name=config.get_collection_name(config.text_collection),
+            embedding_function=self.embeddings,
+            persist_directory=str(config.chroma_dir)
+        )
         
-        self.client: Optional[ClientAPI] = None
-        self.collection: Optional[Collection] = None
-        self.collection_name = "ragindocs_embeddings"
+        self.table_vectorstore = Chroma(
+            collection_name=config.get_collection_name(config.table_collection),
+            embedding_function=self.embeddings,
+            persist_directory=str(config.chroma_dir)
+        )
         
-    def initialize(self) -> bool:
-        """
-        Initialize ChromaDB client and collection.
+        self.image_vectorstore = Chroma(
+            collection_name=config.get_collection_name(config.image_collection),
+            embedding_function=self.embeddings,
+            persist_directory=str(config.chroma_dir)
+        )
         
-        Returns:
-            bool: True if initialization successful, False otherwise
-        """
+        # Document stores for original content (following the reference notebook pattern)
+        self.text_docstore = InMemoryStore()
+        self.table_docstore = InMemoryStore()
+        self.image_docstore = InMemoryStore()
+        
+        # Multi-vector retrievers (this is the key pattern from the reference)
+        self.text_retriever = MultiVectorRetriever(
+            vectorstore=self.text_vectorstore,
+            docstore=self.text_docstore,
+            id_key="doc_id"
+        )
+        
+        self.table_retriever = MultiVectorRetriever(
+            vectorstore=self.table_vectorstore,
+            docstore=self.table_docstore,
+            id_key="doc_id"
+        )
+        
+        self.image_retriever = MultiVectorRetriever(
+            vectorstore=self.image_vectorstore,
+            docstore=self.image_docstore,
+            id_key="doc_id"
+        )
+    
+    def _filter_metadata(self, metadata: dict) -> dict:
+        """Filter out complex metadata that ChromaDB can't handle"""
+        filtered = {}
+        for key, value in metadata.items():
+            # Only keep simple types that ChromaDB accepts
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                filtered[key] = value
+            elif isinstance(value, (list, dict)):
+                # Convert complex types to strings
+                filtered[key] = str(value)
+        return filtered
+    
+    async def store_document_content(self, processed_content: Dict[str, Any]) -> bool:
+        """Store processed document content in vector stores"""
         try:
-            logger.info(f"Initializing ChromaDB in {self.persist_directory}")
+            # Store text documents
+            await self._store_text_documents(processed_content["text_documents"])
             
-            # Create persistent client
-            self.client = chromadb.PersistentClient(
-                path=str(self.persist_directory),
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
+            # Store table documents
+            await self._store_table_documents(processed_content["table_documents"])
+            
+            # Store image documents
+            await self._store_image_documents(processed_content["image_documents"])
+            
+            return True
+        except Exception as e:
+            print(f"Error storing document content: {e}")
+            return False
+    
+    async def _store_text_documents(self, documents: List[Document]):
+        """Store text documents using multi-vector pattern following reference implementation"""
+        if not documents:
+            return
+        
+        # Generate unique IDs for each document
+        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        
+        # Create summary documents for vector search (what gets embedded)
+        summary_docs = []
+        original_docs = []
+        
+        for i, doc in enumerate(documents):
+            # Filter complex metadata to avoid ChromaDB errors
+            clean_metadata = self._filter_metadata(doc.metadata)
+            clean_metadata["doc_id"] = doc_ids[i]
+            
+            # Summary document for vector store (uses the AI-generated summary)
+            summary_doc = Document(
+                page_content=doc.page_content,  # This is the AI summary
+                metadata=clean_metadata
+            )
+            summary_docs.append(summary_doc)
+            
+            # Original document for docstore (includes original content)
+            original_doc = Document(
+                page_content=doc.metadata.get("original_content", doc.page_content),
+                metadata=clean_metadata
+            )
+            original_docs.append(original_doc)
+        
+        # Add summaries to vector store for similarity search
+        await asyncio.to_thread(
+            self.text_vectorstore.add_documents, summary_docs
+        )
+        
+        # Store original documents in docstore for retrieval (following reference pattern)
+        self.text_docstore.mset(list(zip(doc_ids, original_docs)))
+    
+    async def _store_table_documents(self, documents: List[Document]):
+        """Store table documents using multi-vector pattern"""
+        if not documents:
+            return
+        
+        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        
+        summary_docs = []
+        original_docs = []
+        
+        for i, doc in enumerate(documents):
+            # Filter complex metadata to avoid ChromaDB errors
+            clean_metadata = self._filter_metadata(doc.metadata)
+            clean_metadata["doc_id"] = doc_ids[i]
+            
+            # Summary document for vector store
+            summary_doc = Document(
+                page_content=doc.page_content,  # AI summary
+                metadata=clean_metadata
+            )
+            summary_docs.append(summary_doc)
+            
+            # Original document for docstore
+            original_doc = Document(
+                page_content=doc.metadata.get("original_content", doc.page_content),
+                metadata=clean_metadata
+            )
+            original_docs.append(original_doc)
+        
+        await asyncio.to_thread(
+            self.table_vectorstore.add_documents, summary_docs
+        )
+        
+        self.table_docstore.mset(list(zip(doc_ids, original_docs)))
+    
+    async def _store_image_documents(self, documents: List[Document]):
+        """Store image documents using multi-vector pattern"""
+        if not documents:
+            return
+        
+        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        
+        summary_docs = []
+        original_docs = []
+        
+        for i, doc in enumerate(documents):
+            # Filter complex metadata to avoid ChromaDB errors
+            clean_metadata = self._filter_metadata(doc.metadata)
+            clean_metadata["doc_id"] = doc_ids[i]
+            
+            # Summary document for vector store (description)
+            summary_doc = Document(
+                page_content=doc.page_content,  # AI description
+                metadata=clean_metadata
+            )
+            summary_docs.append(summary_doc)
+            
+            # Original document for docstore (includes base64 image)
+            original_doc = Document(
+                page_content=doc.page_content,  # Keep description as content
+                metadata=clean_metadata  # Metadata includes image_base64
+            )
+            original_docs.append(original_doc)
+        
+        await asyncio.to_thread(
+            self.image_vectorstore.add_documents, summary_docs
+        )
+        
+        self.image_docstore.mset(list(zip(doc_ids, original_docs)))
+    
+    async def search_multimodal(self, query: str, content_types: Optional[List[str]] = None, k: int = 5) -> Dict[str, List[Document]]:
+        """Search across multiple content types"""
+        if content_types is None:
+            content_types = ["text", "tables", "images"]
+        
+        results = {}
+        
+        # Search text if requested
+        if "text" in content_types:
+            try:
+                text_docs = await asyncio.to_thread(
+                    self.text_retriever.invoke, query
                 )
-            )
+                results["text"] = text_docs[:k]
+            except Exception as e:
+                print(f"Error searching text: {e}")
+                results["text"] = []
+        
+        # Search tables if requested
+        if "tables" in content_types:
+            try:
+                table_docs = await asyncio.to_thread(
+                    self.table_retriever.invoke, query
+                )
+                results["tables"] = table_docs[:k]
+            except Exception as e:
+                print(f"Error searching tables: {e}")
+                results["tables"] = []
+        
+        # Search images if requested
+        if "images" in content_types:
+            try:
+                image_docs = await asyncio.to_thread(
+                    self.image_retriever.invoke, query
+                )
+                results["images"] = image_docs[:k]
+            except Exception as e:
+                print(f"Error searching images: {e}")
+                results["images"] = []
+        
+        return results
+    
+    async def get_document_metadata(self, doc_id: str) -> Optional[Dict]:
+        """Get document metadata"""
+        # Search across all collections for this document
+        for vectorstore in [self.text_vectorstore, self.table_vectorstore, self.image_vectorstore]:
+            try:
+                results = await asyncio.to_thread(
+                    vectorstore.get,
+                    where={"doc_id": doc_id}
+                )
+                if results["documents"]:
+                    return results["metadatas"][0]
+            except Exception as e:
+                print(f"Error getting metadata from collection: {e}")
+                continue
+        return None
+    
+    async def list_all_documents(self) -> List[Dict[str, Any]]:
+        """List all unique documents across all collections"""
+        try:
+            doc_ids_seen = set()
+            documents = []
             
-            # Get or create collection
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"description": "RAGinDocs document embeddings"}
-            )
+            # Check all vector stores
+            for vectorstore in [self.text_vectorstore, self.table_vectorstore, self.image_vectorstore]:
+                try:
+                    results = await asyncio.to_thread(vectorstore.get)
+                    if results["metadatas"]:
+                        for metadata in results["metadatas"]:
+                            if metadata.get("doc_id") not in doc_ids_seen:
+                                doc_ids_seen.add(metadata.get("doc_id"))
+                                documents.append(metadata)
+                except Exception as e:
+                    print(f"Error listing from collection: {e}")
+                    continue
             
-            logger.info(f"ChromaDB initialized. Collection: {self.collection_name}")
-            return True
-            
+            return documents
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {str(e)}")
+            print(f"Error listing documents: {e}")
+            return []
+    
+    async def delete_document(self, doc_id: str) -> bool:
+        """Delete all content for a document"""
+        try:
+            deleted_any = False
+            
+            # Delete from all vector stores
+            for vectorstore in [self.text_vectorstore, self.table_vectorstore, self.image_vectorstore]:
+                try:
+                    # Get IDs to delete
+                    results = await asyncio.to_thread(
+                        vectorstore.get,
+                        where={"doc_id": doc_id}
+                    )
+                    
+                    if results["ids"]:
+                        await asyncio.to_thread(
+                            vectorstore.delete,
+                            ids=results["ids"]
+                        )
+                        deleted_any = True
+                except Exception as e:
+                    print(f"Error deleting from vector store: {e}")
+                    continue
+            
+            # Clean up docstores
+            # Note: InMemoryStore doesn't have direct delete by criteria,
+            # so we'd need to track the mapping IDs separately for complete cleanup
+            
+            return deleted_any
+        except Exception as e:
+            print(f"Error deleting document {doc_id}: {e}")
             return False
-    
-    def add_embeddings(
-        self,
-        embeddings: List[List[float]],
-        texts: List[str],
-        metadatas: List[Dict[str, Any]],
-        ids: Optional[List[str]] = None
-    ) -> bool:
-        """
-        Add embeddings to the vector store.
-        
-        Args:
-            embeddings: List of embedding vectors
-            texts: List of text chunks
-            metadatas: List of metadata dictionaries
-            ids: Optional list of custom IDs (auto-generated if None)
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self.collection:
-            raise RuntimeError("Vector store not initialized. Call initialize() first.")
-        
-        if not (len(embeddings) == len(texts) == len(metadatas)):
-            raise ValueError("Embeddings, texts, and metadatas must have same length")
-        
-        try:
-            # Generate IDs if not provided
-            if ids is None:
-                ids = [str(uuid.uuid4()) for _ in range(len(embeddings))]
-            
-            # Convert metadata to strings for ChromaDB compatibility
-            processed_metadatas = []
-            for metadata in metadatas:
-                processed_metadata = {}
-                for key, value in metadata.items():
-                    if isinstance(value, (dict, list)):
-                        processed_metadata[key] = json.dumps(value)
-                    else:
-                        processed_metadata[key] = str(value)
-                processed_metadatas.append(processed_metadata)
-            
-            # Add to collection
-            self.collection.add(
-                embeddings=embeddings,  # type: ignore
-                documents=texts,
-                metadatas=processed_metadatas,
-                ids=ids
-            )
-            
-            logger.info(f"Added {len(embeddings)} embeddings to vector store")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to add embeddings: {str(e)}")
-            return False
-    
-    def search_similar(
-        self,
-        query_embedding: List[float],
-        n_results: int = 5,
-        where_filter: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Search for similar embeddings.
-        
-        Args:
-            query_embedding: Query embedding vector
-            n_results: Number of results to return
-            where_filter: Optional metadata filter
-            
-        Returns:
-            Dictionary with search results
-        """
-        if not self.collection:
-            raise RuntimeError("Vector store not initialized. Call initialize() first.")
-        
-        try:
-            # Perform similarity search
-            results = self.collection.query(
-                query_embeddings=[query_embedding],  # type: ignore
-                n_results=n_results,
-                where=where_filter,
-                include=["documents", "metadatas", "distances"]
-            )
-            
-            # Process results
-            processed_results = {
-                "documents": results["documents"][0] if results["documents"] else [],
-                "metadatas": [],
-                "distances": results["distances"][0] if results["distances"] else [],
-                "ids": results["ids"][0] if results["ids"] else []
-            }
-            
-            # Process metadata (convert JSON strings back to objects)
-            if results["metadatas"] and results["metadatas"][0]:
-                for metadata in results["metadatas"][0]:
-                    processed_metadata = {}
-                    for key, value in metadata.items():
-                        try:
-                            # Try to parse as JSON first (only if it's a string)
-                            if isinstance(value, str):
-                                processed_metadata[key] = json.loads(value)
-                            else:
-                                processed_metadata[key] = value
-                        except (json.JSONDecodeError, TypeError):
-                            # Keep as original value if not JSON
-                            processed_metadata[key] = value
-                    processed_results["metadatas"].append(processed_metadata)
-            
-            logger.info(f"Found {len(processed_results['documents'])} similar documents")
-            return processed_results
-            
-        except Exception as e:
-            logger.error(f"Failed to search similar embeddings: {str(e)}")
-            return {
-                "documents": [],
-                "metadatas": [],
-                "distances": [],
-                "ids": []
-            }
-    
-    def search_by_text(
-        self,
-        query_text: str,
-        embedding_service,
-        n_results: int = 5,
-        where_filter: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Search using text query (will be converted to embedding).
-        
-        Args:
-            query_text: Query text
-            embedding_service: Embedding service to convert text to vector
-            n_results: Number of results to return
-            where_filter: Optional metadata filter
-            
-        Returns:
-            Dictionary with search results
-        """
-        try:
-            # Convert query to embedding
-            query_embedding = embedding_service.generate_single_embedding(query_text)
-            
-            # Search using embedding
-            return self.search_similar(
-                query_embedding=query_embedding,
-                n_results=n_results,
-                where_filter=where_filter
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to search by text: {str(e)}")
-            return {
-                "documents": [],
-                "metadatas": [],
-                "distances": [],
-                "ids": []
-            }
-    
-    def delete_by_filter(self, where_filter: Dict[str, Any]) -> bool:
-        """
-        Delete embeddings by metadata filter.
-        
-        Args:
-            where_filter: Metadata filter for deletion
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self.collection:
-            raise RuntimeError("Vector store not initialized. Call initialize() first.")
-        
-        try:
-            self.collection.delete(where=where_filter)
-            logger.info(f"Deleted embeddings matching filter: {where_filter}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to delete embeddings: {str(e)}")
-            return False
-    
-    def get_collection_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the collection.
-        
-        Returns:
-            Dictionary with collection statistics
-        """
-        if not self.collection:
-            return {"initialized": False}
-        
-        try:
-            count = self.collection.count()
-            return {
-                "initialized": True,
-                "collection_name": self.collection_name,
-                "document_count": count,
-                "persist_directory": str(self.persist_directory)
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to get collection stats: {str(e)}")
-            return {
-                "initialized": True,
-                "error": str(e)
-            }
-    
-    def reset_collection(self) -> bool:
-        """
-        Reset (clear) the collection.
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self.client:
-            raise RuntimeError("Vector store not initialized. Call initialize() first.")
-        
-        try:
-            # Delete existing collection
-            self.client.delete_collection(name=self.collection_name)
-            
-            # Recreate collection
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"description": "RAGinDocs document embeddings"}
-            )
-            
-            logger.info(f"Reset collection: {self.collection_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to reset collection: {str(e)}")
-            return False
-
-# Global instance for reuse across requests
-vector_store = VectorStoreService()

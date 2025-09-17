@@ -1,75 +1,37 @@
-import os
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-# Load environment variables
-load_dotenv()
-
-from routes import upload, query, embedding, vector
-from routes.pipeline import pipeline_router
+from api.routes import documents, queries
 import uvicorn
 
-# Create FastAPI app
+# Initialize FastAPI app
 app = FastAPI(
-    title="RAGinDocs API",
-    description="Real-time QA + Intelligent Action Generation from PDFs/Docs using Hybrid RAG",
-    version="1.0.0",
+    title="RAGinDocs Backend Service",
+    description="Backend service for RAGinDocs application",
+    version="2.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
-# Add CORS middleware for frontend integration
+# Configure CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual frontend URLs
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(upload.router)
-app.include_router(query.router)
-app.include_router(embedding.router)
-app.include_router(vector.router)
-app.include_router(pipeline_router)  # Add the complete pipeline router
+# Include API routes
+app.include_router(documents.router, tags=["Documents"])
+app.include_router(queries.router, tags=["Queries"])
 
 @app.get("/")
-def read_root():
-    return {
-        "message": "Welcome to RAGinDocs API!",
-        "version": "1.0.0",
-        "phase": "Phase 1 - Core RAG Pipeline",
-        "docs": "/docs",
-        "endpoints": {
-            "upload": "/upload/document",
-            "pipeline_complete": "/pipeline/document (complete pipeline)",
-            "query": "/query/document", 
-            "embeddings": "/embeddings/text",
-            "vector": "/vector/search",
-            "health": "/query/health"
-        }
-    }
+async def root():
+    return {"message": "Welcome to the RAGinDocs Backend Service!"}
 
 @app.get("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "phase": "Phase 1",
-        "services": {
-            "upload": "ready",
-            "query": "ready",
-            "embeddings": "ready",
-            "vector_db": "ready"
-        }
-    }
+async def health():
+    return {"status": "healthy", "service": "RAGinDocs Backend", "version": "2.0"}
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
