@@ -4,12 +4,12 @@ from datetime import datetime
 
 class DocumentMetadata(BaseModel):
     id: str
-    fileName: str
-    fileType: str
-    fileSize: int
-    uploadDate: datetime
-    pageCount: Optional[int] = None
-    processingStatus: str = "pending"
+    file_name: str
+    file_type: str
+    file_size: int
+    upload_date: datetime
+    page_count: Optional[int] = None
+    processing_status: str = "pending"
 
 class DocumentResponse(BaseModel):
     success: bool
