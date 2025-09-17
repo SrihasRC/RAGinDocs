@@ -22,12 +22,16 @@ app.add_middleware(
 )
 
 # Include API routes
-app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
-app.include_router(queries.router, prefix="/api/queries", tags=["Queries"])
+app.include_router(documents.router, tags=["Documents"])
+app.include_router(queries.router, tags=["Queries"])
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to the RAGinDocs Backend Service!"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "RAGinDocs Backend", "version": "2.0"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
