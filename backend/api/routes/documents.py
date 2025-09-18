@@ -24,7 +24,7 @@ async def upload_document(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="No filename provided")
         
         # Validate file type
-        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
         file_extension = Path(file.filename).suffix.lower()
         
         if file_extension not in allowed_extensions:

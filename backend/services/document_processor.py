@@ -124,6 +124,8 @@ class LangChainDocumentProcessor:
                 raw_content = await self._extract_pdf_content(temp_file_path)
             elif file_extension == ".docx":
                 raw_content = await self._extract_docx_content(temp_file_path)
+            elif file_extension == ".txt":
+                raw_content = await self._extract_txt_content(temp_file_path)
             else:
                 raise ValueError(f"Unsupported file type: {file_extension}")
             
@@ -258,6 +260,45 @@ class LangChainDocumentProcessor:
                 })
         
         # TODO: Extract images from DOCX (requires more complex processing)
+        
+        return content
+    
+    async def _extract_txt_content(self, file_path: Path) -> Dict[str, Any]:
+        """Extract content from TXT"""
+        content = {
+            "text_chunks": [],
+            "tables": [],
+            "images": [],
+            "page_count": None
+        }
+        
+        # Read the text file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            text = f.read()
+        
+        # Split into paragraphs (chunks separated by double newlines)
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        
+        # If no double newlines, split by single newlines and group
+        if len(paragraphs) <= 1 and '\n' in text:
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            # Group lines into chunks of reasonable size
+            chunk_size = 5
+            paragraphs = []
+            for i in range(0, len(lines), chunk_size):
+                chunk_lines = lines[i:i+chunk_size]
+                paragraphs.append('\n'.join(chunk_lines))
+        elif len(paragraphs) <= 1:
+            # Single paragraph/line
+            paragraphs = [text.strip()] if text.strip() else []
+        
+        # Add as text chunks
+        for para_idx, para in enumerate(paragraphs):
+            if para:
+                content["text_chunks"].append({
+                    "content": para,
+                    "element_id": f"para_{para_idx}"
+                })
         
         return content
     

@@ -79,36 +79,46 @@ class LangChainVectorStore:
     async def store_document_content(self, processed_content: Dict[str, Any]) -> bool:
         """Store processed document content in vector stores"""
         try:
+            # Get document-level metadata
+            doc_metadata = processed_content.get("metadata", {})
+            
             # Store text documents
-            await self._store_text_documents(processed_content["text_documents"])
+            await self._store_text_documents(processed_content["text_documents"], doc_metadata)
             
             # Store table documents
-            await self._store_table_documents(processed_content["table_documents"])
+            await self._store_table_documents(processed_content["table_documents"], doc_metadata)
             
             # Store image documents
-            await self._store_image_documents(processed_content["image_documents"])
+            await self._store_image_documents(processed_content["image_documents"], doc_metadata)
             
             return True
         except Exception as e:
             print(f"Error storing document content: {e}")
             return False
     
-    async def _store_text_documents(self, documents: List[Document]):
+    async def _store_text_documents(self, documents: List[Document], doc_metadata: Optional[Dict[str, Any]] = None):
         """Store text documents using multi-vector pattern following reference implementation"""
         if not documents:
             return
         
-        # Generate unique IDs for each document
-        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        # Generate unique chunk IDs for ChromaDB storage, but preserve original doc_id
+        chunk_ids = [str(uuid.uuid4()) for _ in documents]
         
         # Create summary documents for vector search (what gets embedded)
         summary_docs = []
         original_docs = []
         
         for i, doc in enumerate(documents):
+            # Merge document-level metadata with chunk metadata
+            chunk_metadata = doc.metadata.copy()
+            if doc_metadata:
+                chunk_metadata.update(doc_metadata)
+            
             # Filter complex metadata to avoid ChromaDB errors
-            clean_metadata = self._filter_metadata(doc.metadata)
-            clean_metadata["doc_id"] = doc_ids[i]
+            clean_metadata = self._filter_metadata(chunk_metadata)
+            # Keep original doc_id for document-level grouping, but add unique chunk_id for storage  
+            clean_metadata["chunk_id"] = chunk_ids[i]
+            # doc_id stays the same for all chunks of the same document
             
             # Summary document for vector store (uses the AI-generated summary)
             summary_doc = Document(
@@ -130,9 +140,9 @@ class LangChainVectorStore:
         )
         
         # Store original documents in docstore for retrieval (following reference pattern)
-        self.text_docstore.mset(list(zip(doc_ids, original_docs)))
+        self.text_docstore.mset(list(zip(chunk_ids, original_docs)))
     
-    async def _store_table_documents(self, documents: List[Document]):
+    async def _store_table_documents(self, documents: List[Document], doc_metadata: Optional[Dict[str, Any]] = None):
         """Store table documents using multi-vector pattern"""
         if not documents:
             return
@@ -167,7 +177,7 @@ class LangChainVectorStore:
         
         self.table_docstore.mset(list(zip(doc_ids, original_docs)))
     
-    async def _store_image_documents(self, documents: List[Document]):
+    async def _store_image_documents(self, documents: List[Document], doc_metadata: Optional[Dict[str, Any]] = None):
         """Store image documents using multi-vector pattern"""
         if not documents:
             return
