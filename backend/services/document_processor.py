@@ -180,8 +180,20 @@ class LangChainDocumentProcessor:
         for page_num in range(len(doc)):
             page = doc[page_num]
             
-            # Extract text
-            text = page.get_text()
+            # Extract text - handle different PyMuPDF versions gracefully
+            text = ""
+            try:
+                # Standard method for newer versions
+                text = page.get_text()  # type: ignore
+            except:
+                try:
+                    # Alternative method
+                    text = page.getText()  # type: ignore
+                except:
+                    # Last resort - skip this page's text
+                    print(f"Could not extract text from page {page_num + 1}")
+                    continue
+                    
             if text.strip():
                 content["text_chunks"].append({
                     "page": page_num + 1,
@@ -191,9 +203,9 @@ class LangChainDocumentProcessor:
             
             # Extract tables (basic detection)
             try:
-                tables = page.find_tables()
+                tables = page.find_tables()  # type: ignore
                 for table_idx, table in enumerate(tables):
-                    table_data = table.extract()
+                    table_data = table.extract()  # type: ignore
                     if table_data:
                         content["tables"].append({
                             "page": page_num + 1,
@@ -236,7 +248,7 @@ class LangChainDocumentProcessor:
             "page_count": None
         }
         
-        doc = docx.Document(file_path)
+        doc = docx.Document(str(file_path))
         
         # Extract paragraphs
         for para_idx, para in enumerate(doc.paragraphs):
