@@ -98,7 +98,7 @@ async def list_documents():
         for doc_meta in documents:
             try:
                 metadata = DocumentMetadata(
-                    id=doc_meta.get("document_id", "unknown"),
+                    id=doc_meta.get("doc_id", doc_meta.get("document_id", "unknown")),
                     file_name=doc_meta.get("filename", doc_meta.get("file_name", "Unknown")),
                     file_size=doc_meta.get("file_size", 0),
                     file_type=doc_meta.get("file_type", "unknown"),

@@ -147,15 +147,23 @@ class LangChainVectorStore:
         if not documents:
             return
         
-        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        # Generate unique chunk IDs for ChromaDB storage, but preserve original doc_id
+        chunk_ids = [str(uuid.uuid4()) for _ in documents]
         
         summary_docs = []
         original_docs = []
         
         for i, doc in enumerate(documents):
+            # Merge document-level metadata with chunk metadata
+            chunk_metadata = doc.metadata.copy()
+            if doc_metadata:
+                chunk_metadata.update(doc_metadata)
+            
             # Filter complex metadata to avoid ChromaDB errors
-            clean_metadata = self._filter_metadata(doc.metadata)
-            clean_metadata["doc_id"] = doc_ids[i]
+            clean_metadata = self._filter_metadata(chunk_metadata)
+            # Keep original doc_id for document-level grouping, but add unique chunk_id for storage
+            clean_metadata["chunk_id"] = chunk_ids[i]
+            # doc_id stays the same for all chunks of the same document
             
             # Summary document for vector store
             summary_doc = Document(
@@ -175,22 +183,30 @@ class LangChainVectorStore:
             self.table_vectorstore.add_documents, summary_docs
         )
         
-        self.table_docstore.mset(list(zip(doc_ids, original_docs)))
+        self.table_docstore.mset(list(zip(chunk_ids, original_docs)))
     
     async def _store_image_documents(self, documents: List[Document], doc_metadata: Optional[Dict[str, Any]] = None):
         """Store image documents using multi-vector pattern"""
         if not documents:
             return
         
-        doc_ids = [str(uuid.uuid4()) for _ in documents]
+        # Generate unique chunk IDs for ChromaDB storage, but preserve original doc_id
+        chunk_ids = [str(uuid.uuid4()) for _ in documents]
         
         summary_docs = []
         original_docs = []
         
         for i, doc in enumerate(documents):
+            # Merge document-level metadata with chunk metadata
+            chunk_metadata = doc.metadata.copy()
+            if doc_metadata:
+                chunk_metadata.update(doc_metadata)
+            
             # Filter complex metadata to avoid ChromaDB errors
-            clean_metadata = self._filter_metadata(doc.metadata)
-            clean_metadata["doc_id"] = doc_ids[i]
+            clean_metadata = self._filter_metadata(chunk_metadata)
+            # Keep original doc_id for document-level grouping, but add unique chunk_id for storage
+            clean_metadata["chunk_id"] = chunk_ids[i]
+            # doc_id stays the same for all chunks of the same document
             
             # Summary document for vector store (description)
             summary_doc = Document(
@@ -210,7 +226,7 @@ class LangChainVectorStore:
             self.image_vectorstore.add_documents, summary_docs
         )
         
-        self.image_docstore.mset(list(zip(doc_ids, original_docs)))
+        self.image_docstore.mset(list(zip(chunk_ids, original_docs)))
     
     async def search_multimodal(self, query: str, content_types: Optional[List[str]] = None, k: int = 5) -> Dict[str, List[Document]]:
         """Search across multiple content types"""
@@ -273,8 +289,7 @@ class LangChainVectorStore:
     async def list_all_documents(self) -> List[Dict[str, Any]]:
         """List all unique documents across all collections"""
         try:
-            doc_ids_seen = set()
-            documents = []
+            doc_metadata_map = {}  # Use doc_id as key to store best metadata for each document
             
             # Check all vector stores
             for vectorstore in [self.text_vectorstore, self.table_vectorstore, self.image_vectorstore]:
@@ -282,17 +297,43 @@ class LangChainVectorStore:
                     results = await asyncio.to_thread(vectorstore.get)
                     if results["metadatas"]:
                         for metadata in results["metadatas"]:
-                            if metadata.get("doc_id") not in doc_ids_seen:
-                                doc_ids_seen.add(metadata.get("doc_id"))
-                                documents.append(metadata)
+                            doc_id = metadata.get("doc_id")
+                            if doc_id:
+                                # If we haven't seen this doc_id, or current metadata is more complete, use it
+                                if (doc_id not in doc_metadata_map or 
+                                    self._is_better_metadata(metadata, doc_metadata_map[doc_id])):
+                                    doc_metadata_map[doc_id] = metadata
                 except Exception as e:
                     print(f"Error listing from collection: {e}")
                     continue
             
-            return documents
+            return list(doc_metadata_map.values())
         except Exception as e:
             print(f"Error listing documents: {e}")
             return []
+    
+    def _is_better_metadata(self, new_meta: Dict, existing_meta: Dict) -> bool:
+        """Check if new metadata is more complete than existing metadata"""
+        # Prefer metadata that has proper filename (not "Unknown" or missing)
+        new_filename = new_meta.get("filename", new_meta.get("file_name", "Unknown"))
+        existing_filename = existing_meta.get("filename", existing_meta.get("file_name", "Unknown"))
+        
+        if new_filename != "Unknown" and existing_filename == "Unknown":
+            return True
+        elif new_filename == "Unknown" and existing_filename != "Unknown":
+            return False
+        
+        # Prefer metadata with proper file_size (not 0)
+        new_size = new_meta.get("file_size", 0)
+        existing_size = existing_meta.get("file_size", 0)
+        
+        if new_size > 0 and existing_size == 0:
+            return True
+        elif new_size == 0 and existing_size > 0:
+            return False
+            
+        # If both are similar quality, keep existing (first one wins)
+        return False
     
     async def delete_document(self, doc_id: str) -> bool:
         """Delete all content for a document"""
